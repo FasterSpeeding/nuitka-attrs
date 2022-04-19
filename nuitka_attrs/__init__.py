@@ -50,6 +50,7 @@ import ast
 import importlib
 import inspect
 import optparse
+import pathlib
 import re
 import sys
 import textwrap
@@ -57,8 +58,8 @@ import types
 import typing
 
 import attrs
-from nuitka.plugins import PluginBase as plugin_base
-from nuitka.utils import ModuleNames as module_names
+from nuitka.plugins import PluginBase as plugin_base  # type: ignore
+from nuitka.utils import ModuleNames as module_names  # type: ignore
 
 __author__: typing.Final[str] = "Faster Speeding"
 __ci__: typing.Final[str] = "https://github.com/FasterSpeeding/nuitka_attrs/actions"
@@ -100,23 +101,17 @@ _ATTRS_FIELD_GEN: typing.FrozenSet[str] = frozenset(
         # old "attr" namespace
         "attr.attr",
         "attr.attrib",
-        "attr.ib"
+        "attr.field",
+        "attr.ib",
         # new "attrs" namespace
         "attrs.field",
     )
 )
-# __str__, __getstate__ and __setstate__ can be ignored as these aren't procedurally generated.
-_ATTRS_GENNED_METHODS: typing.Sequence[str] = [
-    "__init__",
-    "__repr__ ",
-    "__eq__",
-    "__ne__",
-    "__lt__",
-    "__le__",
-    "__gt__",
-    "__ge__",
-    "__hash__",
-]
+# "__le__", __lt__, "__gt__", "__ge__", "__ne__", "__str__", "__getstate__" and "__setstate__"
+# can be ignored as these aren't procedurally generated.
+# As a note, repr is generated on <= 3.6 to take advantage of f-string support.
+_ATTRS_GET_DISABLED_METHODS: typing.Sequence[str] = ["attr.validators.get_disabled", "attrs.validators.get_disabled"]
+_ATTRS_GENNED_METHODS: typing.Sequence[str] = ["__attrs_init__", "__eq__", "__hash__", "__init__", "__repr__"]
 _ATTR_PATHS: typing.FrozenSet[str] = frozenset((*ATTRS_CLS_GEN, *_ATTRS_FIELD_GEN, "attr", "attrs"))
 _FACTORY_PATHS = ["attr.Factory", "attrs.Factory"]
 _NOTHING_PATHS = ["attr.NOTHING", "attrs.NOTHING"]
@@ -197,16 +192,18 @@ class _Module:
             if ".".join(split[:split_at]) == imported_as:
                 return (full_path + "." + ".".join(split[split_at:])).rstrip(".")
 
-    def join(self) -> str:
+    def join(self) -> typing.Optional[str]:
         if not self.lines_to_insert:
-            return "\n".join(self.source_code)
+            return
 
         self.lines_to_insert = sorted(self.lines_to_insert, key=lambda v: v[0], reverse=True)
         source_code = self.source_code.copy()
         for line_number, line in self.lines_to_insert:
             source_code.insert(line_number, line)
 
-        return "\n".join(source_code)
+        result = "\n".join(source_code)
+        ast.parse(result)
+        return result
 
     def process(self) -> None:
         for cls in self.classes.values():
@@ -226,22 +223,6 @@ def _try_parse_path(node: ast.AST, /) -> str:
     return ""
 
 
-def _get_ast_default(
-    module: _Module, node: ast.AST, /
-) -> typing.Tuple[typing.Optional[ast.AST], typing.Optional[ast.AST]]:
-    if isinstance(node, ast.Call):
-        import_path = module.match_to_import(_try_parse_path(node.func))
-        if import_path not in _ATTRS_FIELD_GEN:
-            for arg in node.keywords:
-                if arg.arg == "default":
-                    return (arg.value, None)
-
-                if arg.arg == "factory":
-                    return (None, arg.value)
-
-    return (node, None)
-
-
 _EMPTY = object()
 
 
@@ -258,10 +239,39 @@ def _uninherited_method(cls: type[typing.Any], attribute: str, /) -> typing.Opti
     return value if isinstance(value, types.FunctionType) else None
 
 
-class _Attr:
-    def __init__(self, default: typing.Optional[ast.AST] = None, factory: typing.Optional[ast.AST] = None) -> None:
-        self.default = default  # TODO: attr_dict
-        self.factory = factory  # TODO: NOTHING
+_FieldKwargT = typing.Literal[
+    "cmp", "converter", "default", "eq", "factory", "hash", "on_setattr", "order", "repr", "validator"
+]
+_FIELD_KWARGS: typing.FrozenSet[_FieldKwargT] = frozenset(
+    ("cmp", "converter", "default", "eq", "factory", "hash", "on_setattr", "order", "repr", "validator")
+)
+_SPECIAL_CASED_DECORATORS: typing.Dict[str, str] = {"default": "factory"}
+
+
+@attrs.define()
+class _Field:
+    cmp: typing.Union[ast.AST, str, None] = None
+    converter: typing.Union[ast.AST, str, None] = None
+    default: typing.Optional[ast.AST] = None  # TODO: attr_dict
+    eq: typing.Union[ast.AST, str, None] = None
+    factory: typing.Union[ast.AST, str, None] = None  # TODO: NOTHING
+    hash: typing.Optional[ast.AST] = None
+    on_setattr: typing.Union[ast.AST, str, None] = None
+    order: typing.Union[ast.AST, str, None] = None
+    repr: typing.Union[ast.AST, str, None] = None
+    validator: typing.Union[ast.AST, str, None] = None
+
+    @classmethod
+    def from_assign(cls, module: _Module, node: typing.Union[ast.Assign, ast.AnnAssign]) -> "_Field":
+        if not node.value or not isinstance(node.value, ast.Call):
+            return _Field(default=node.value)
+
+        import_path = module.match_to_import(_try_parse_path(node.value.func))
+        if import_path not in _ATTRS_FIELD_GEN:
+            return cls(default=node.value)
+
+        kwargs = {arg.arg: arg.value for arg in node.value.keywords if arg.arg in _FIELD_KWARGS}
+        return cls(**kwargs)
 
 
 def _filter_map(
@@ -276,24 +286,40 @@ class _Class:
     def __init__(self, module: _Module, cls_node: ast.ClassDef, /) -> None:
         self._cls: typing.Union[_EllipsisType, typing.Type[typing.Any], None] = ...
         self.declared_methods: typing.Set[str] = set()
-        self.fields: typing.Dict[str, _Attr] = {}
+        self.fields: typing.Dict[str, _Field] = {}
         self.module = module
         self.node = cls_node
+
+        field_modifiers: typing.Dict[str, typing.Set[typing.Tuple[str, str]]] = {}
 
         for node in cls_node.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.declared_methods.add(node.name)
+                for decorator in node.decorator_list:
+                    if isinstance(decorator, ast.Attribute) and isinstance(decorator.value, ast.Name):
+                        if decorator.value.id not in field_modifiers:
+                            field_modifiers[decorator.value.id] = set()
+
+                        field_modifiers[decorator.value.id].add((decorator.attr, node.name))
 
             elif isinstance(node, ast.Assign):
                 # TODO: do we always want to assume auto?
-                defaults = _get_ast_default(self.module, node.value) or (node.value, None)
+                field = _Field.from_assign(self.module, node)
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        self.fields[target.id] = _Attr(*defaults)
+                        self.fields[target.id] = field
 
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                defaults = _get_ast_default(self.module, node.value) if node.value else (None, None)
-                self.fields[node.target.id] = _Attr(*defaults)
+                self.fields[node.target.id] = _Field.from_assign(self.module, node)
+
+        for name, modifiers in field_modifiers.items():
+            if not (field := self.fields.get(name)):
+                continue
+
+            for modifier, attribute in modifiers:
+                modifier = _SPECIAL_CASED_DECORATORS.get(modifier, modifier)
+                if modifier in _FIELD_KWARGS:
+                    setattr(field, modifier, f"self.{attribute}")
 
     def get_cls(self) -> typing.Optional[typing.Type[typing.Any]]:
         if self._cls is ...:
@@ -317,7 +343,7 @@ class _Class:
             except attrs.exceptions.NotAnAttrsClassError:
                 continue
 
-            other_module = self.module.plugin.get_module(base_cls.__module__)
+            other_module = self.module.plugin.get_module_cached(base_cls.__module__)
 
             # TODO: deal with making sure any names the other fields use are available in the global
             # namespace
@@ -339,18 +365,65 @@ class _Class:
 
             code = textwrap.indent(textwrap.dedent(inspect.getsource(method)).replace("    ", indent), indent)
 
-            if attribute == "__init__":
-                code = code.replace("_cached_setattr.__get__", "object.__setattr__.__get__").replace(
-                    "NOTHING", nothing_import
+            if attribute == "__init__" or attribute == "__attrs_init__":
+                validator_import = next(
+                    _filter_map(module.get_import, _ATTRS_GET_DISABLED_METHODS), None
+                ) or module.add_import(_ATTRS_GET_DISABLED_METHODS[0])
+                code = (
+                    code.replace("_cached_setattr.__get__", "object.__setattr__.__get__")
+                    .replace("NOTHING", nothing_import)
+                    .replace("_config._run_validators is True", f"{validator_import}() is False")
                 )
                 for name, field in self.fields.items():
+                    try:
+                        field_index = next(filter(lambda v: name == v[1].name, enumerate(attrs.fields(cls))))[0]
+                    except StopIteration:
+                        continue
+
                     if field.default:
                         code = code.replace(f"attr_dict[{name!r}].default", ast.unparse(field.default))
 
+                    if isinstance(field.factory, str):
+                        code = code.replace(f"__attr_factory_{name}(self)", f"{field.factory}()")
+
                     elif field.factory:
-                        factory_name = f"__attr_{cls.__name__}__init__{name}_factory"
+                        factory_name = f"_attr_{cls.__name__}_{name}_factory"
                         module.lines_to_insert.append((before_class, factory_name + " = " + ast.unparse(field.factory)))
                         code = code.replace(f"__attr_factory_{name}", factory_name)
+
+                    if isinstance(field.converter, str):
+                        code = code.replace(f"__attr_converter_{name}(self,", f"{field.converter}(")
+
+                    elif field.converter:
+                        converter_name = f"_attr_{cls.__name__}_{name}_converter"
+                        code = code.replace(f"__attr_converter_{name}", converter_name)
+                        module.lines_to_insert.append(
+                            (before_class, converter_name + " = " + ast.unparse(field.converter))
+                        )
+
+                    if isinstance(field.validator, str):
+                        code = code.replace(
+                            f"__attr_validator_{name}(self, __attr_{name}",
+                            f"{field.validator}(self.__attrs_attrs__[{field_index}]",
+                        )
+
+                    elif field.validator:
+                        validator_name = f"_attr_{cls.__name__}_{name}_validator"
+                        module.lines_to_insert.append(
+                            (before_class, validator_name + " = " + ast.unparse(field.validator))
+                        )
+                        code = code.replace(f"__attr_validator_{name}", validator_name).replace(
+                            f"__attr_{name}", f"self.__attrs_attrs__[{field_index}]"
+                        )
+
+            elif attribute == "__repr__":
+                ...
+
+            elif attribute == "__hash__":
+                ...
+
+            elif attribute == "__eq__":
+                ...
 
             module.lines_to_insert.append((start_of_cls.end_lineno or start_of_cls.lineno, code))
 
@@ -360,9 +433,14 @@ class AttrsPlugin(plugin_base.NuitkaPluginBase):
 
     plugin_name: typing.Final[str] = "attrs"
 
-    def __init__(self, attrs_modules: typing.Optional[typing.List[str]]) -> None:
+    def __init__(self, attrs_modules: typing.Optional[typing.List[str]], debug_dir: typing.Optional[str]) -> None:
         self.attrs_modules = [re.compile(name) for name in attrs_modules] if attrs_modules else None
+        self.debug_dir = pathlib.Path(debug_dir) if debug_dir else None
         self.module_cache: typing.Dict[str, _Module] = {}
+
+        if self.debug_dir:
+            for file in self.debug_dir.glob("*-debug.py"):
+                file.unlink()
 
     @classmethod
     def addPluginCommandLineOptions(cls, group: optparse.OptionGroup) -> None:
@@ -373,14 +451,16 @@ class AttrsPlugin(plugin_base.NuitkaPluginBase):
             default=None,
             help="Modules to pre-compile the attrs class methods for. These are regex matched.",
         )
+        group.add_option(
+            "--attrs-debug-dir",
+            action="store",
+            dest="debug_dir",
+            default=None,
+            help="A debug directory that the post attrs-handling generated modules are saved to."
+            "Warning, all .py files in this directory will be overwritten or deleted.",
+        )
 
-    def _match_module(self, module: str, /) -> bool:
-        if self.attrs_modules is None:
-            return True
-
-        return module in self.attrs_modules
-
-    def get_module(self, name: str, /, source_code: typing.Optional[str] = None) -> _Module:
+    def get_module(self, name: str, /, *, source_code: typing.Optional[str] = None) -> _Module:
         if module := self.module_cache.get(name):
             self.module_cache[name] = self.module_cache.pop(name)
             return module
@@ -400,15 +480,28 @@ class AttrsPlugin(plugin_base.NuitkaPluginBase):
 
         return module
 
+    def get_module_cached(self, name: str, /, *, source_code: typing.Optional[str] = None) -> _Module:
+        if module := self.module_cache.get(name):
+            self.module_cache[name] = self.module_cache.pop(name)
+            return module
+
+        return self.get_module(name, source_code=source_code)
+
     def onModuleSourceCode(self, module_name: module_names.ModuleName, source_code: str) -> str:
-        if not self._match_module(module_name):
+        name = str(module_name)
+        if self.attrs_modules and not any(match.fullmatch(name) for match in self.attrs_modules):
             return source_code
 
         try:
-            module = self.get_module(str(module_name))
+            module = self.get_module(name, source_code=source_code)
         except Exception as exc:
-            self.info(f"Failed to load {module_name!s} module to process dataclasses: {exc}")
+            self.info(f"Failed to load {name!s} module to process dataclasses: {exc}")
             return source_code
 
         module.process()
-        return module.join()
+
+        if (result := module.join()) and self.debug_dir:
+            with (self.debug_dir / f"{name!s}-debug.py").open("w+") as file:
+                file.write(result)
+
+        return result or source_code
