@@ -202,7 +202,6 @@ class _Module:
             source_code.insert(line_number, line)
 
         result = "\n".join(source_code)
-        ast.parse(result)
         return result
 
     def process(self) -> None:
@@ -353,17 +352,41 @@ class _Class:
         nothing_import = next(_filter_map(module.get_import, _NOTHING_PATHS), None) or module.add_import(
             _NOTHING_PATHS[0]
         )
-        before_class = (self.node.decorator_list[0].lineno if self.node.decorator_list else self.node.lineno) - 1
-        # Skip the class docstring
-        start_of_cls = self.node.body[0]
-        line = module.source_code[start_of_cls.lineno - 1]
-        indent = line[: len(line) - len(line.lstrip())]
+
+        if self.node.lineno == self.node.end_lineno:
+            # TODO: handle 1 line classes.
+            raise NotImplementedError
+
+        else:
+            before_class = (self.node.decorator_list[0].lineno if self.node.decorator_list else self.node.lineno) - 1
+            # Skip the class docstring
+            start_of_body = self.node.body[0]
+            indent = module.source_code[start_of_body.lineno - 1].removesuffix(
+                module.source_code[start_of_body.lineno - 1].lstrip()
+            )
+
         for attribute in _ATTRS_GENNED_METHODS:
             method = _uninherited_method(cls, attribute)
             if method is None or attribute in self.declared_methods:
                 continue
 
             code = textwrap.indent(textwrap.dedent(inspect.getsource(method)).replace("    ", indent), indent)
+
+            if attribute == "__init__":
+                # Hack to stop `__attrs_init__` from being unwantedly generated
+                pre_indent = self.module.source_code[self.node.lineno - 1].removesuffix(
+                    self.module.source_code[self.node.lineno - 1].lstrip()
+                )
+                if self.node.end_lineno is None:
+                    # This doesn't seem to ever actually happen so i can't safely make any assumptions here.
+                    raise NotImplementedError(f"{self.module.module.__name__}.{self._cls.__name__}")
+
+                module.lines_to_insert.extend(
+                    (
+                        (start_of_body.end_lineno or start_of_body.lineno, f"{indent}__attrs_init__ = None"),
+                        (self.node.end_lineno + 1, f"{pre_indent}del {self.node.name}.__attrs_init__"),
+                    )
+                )
 
             if attribute == "__init__" or attribute == "__attrs_init__":
                 validator_import = next(
@@ -425,7 +448,7 @@ class _Class:
             elif attribute == "__eq__":
                 ...
 
-            module.lines_to_insert.append((start_of_cls.end_lineno or start_of_cls.lineno, code))
+            module.lines_to_insert.append((start_of_body.end_lineno or start_of_body.lineno, code))
 
 
 class AttrsPlugin(plugin_base.NuitkaPluginBase):
@@ -489,6 +512,22 @@ class AttrsPlugin(plugin_base.NuitkaPluginBase):
 
     def onModuleSourceCode(self, module_name: module_names.ModuleName, source_code: str) -> str:
         name = str(module_name)
+
+        if module_name == "attr._make":
+            # Small hack to stop attrs from generating `__attrs_init__` because of the generated `__init__`.
+            source_code = source_code.replace(
+                """if _determine_whether_to_implement(
+            cls, init, auto_detect, ("__init__",)
+        ):
+            builder.add_init()
+        else:""",
+                """if _determine_whether_to_implement(
+            cls, init, auto_detect, ("__init__",)
+        ):
+            builder.add_init()
+        elif not _has_own_attribute(cls, "__attrs_init__"):""",
+            )
+
         if self.attrs_modules and not any(match.fullmatch(name) for match in self.attrs_modules):
             return source_code
 
