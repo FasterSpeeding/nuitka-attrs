@@ -32,7 +32,7 @@
 """A Nutika plugin for compile-time generating attrs and dataclasses methods."""
 from __future__ import annotations
 
-__all__: typing.List[str] = [
+__all__: list[str] = [
     "AttrsPlugin",
     "__author__",
     "__ci__",
@@ -47,6 +47,7 @@ __all__: typing.List[str] = [
 ]
 
 import ast
+import dataclasses
 import importlib
 import inspect
 import optparse
@@ -56,6 +57,7 @@ import sys
 import textwrap
 import types
 import typing
+from collections import abc as collections
 
 import attrs
 from nuitka.plugins import PluginBase as plugin_base  # type: ignore
@@ -81,7 +83,7 @@ if sys.version_info >= (3, 10):
 else:
     _EllipsisType = type(...)
 
-ATTRS_CLS_GEN: typing.FrozenSet[str] = frozenset(
+ATTRS_CLS_GEN = frozenset(
     (
         # old "attr" namespace
         "attr.attributes",
@@ -96,7 +98,7 @@ ATTRS_CLS_GEN: typing.FrozenSet[str] = frozenset(
         "attrs.mutable",
     )
 )
-_ATTRS_FIELD_GEN: typing.FrozenSet[str] = frozenset(
+_ATTRS_FIELD_GEN = frozenset(
     (
         # old "attr" namespace
         "attr.attr",
@@ -110,10 +112,8 @@ _ATTRS_FIELD_GEN: typing.FrozenSet[str] = frozenset(
 # "__le__", __lt__, "__gt__", "__ge__", "__ne__", "__str__", "__getstate__" and "__setstate__"
 # can be ignored as these aren't procedurally generated.
 # As a note, repr is generated on <= 3.6 to take advantage of f-string support.
-_ATTRS_GET_DISABLED_METHODS: typing.Sequence[str] = ["attr.validators.get_disabled", "attrs.validators.get_disabled"]
-_ATTRS_GENNED_METHODS: typing.Sequence[str] = ["__attrs_init__", "__eq__", "__hash__", "__init__", "__repr__"]
-_ATTR_PATHS: typing.FrozenSet[str] = frozenset((*ATTRS_CLS_GEN, *_ATTRS_FIELD_GEN, "attr", "attrs"))
-_FACTORY_PATHS = ["attr.Factory", "attrs.Factory"]
+_ATTRS_GET_DISABLED_METHODS = ["attr.validators.get_disabled", "attrs.validators.get_disabled"]
+_ATTR_PATHS = frozenset((*ATTRS_CLS_GEN, *_ATTRS_FIELD_GEN, "attr", "attrs"))
 _NOTHING_PATHS = ["attr.NOTHING", "attrs.NOTHING"]
 
 
@@ -121,17 +121,14 @@ class _Module:
     __slots__ = ("classes", "imports", "lines_to_insert", "module", "node", "plugin", "source_code")
 
     def __init__(self, plugin: AttrsPlugin, module: types.ModuleType, source_code: str, /):
-        self.classes: typing.Dict[str, _Class] = {}
-        self.imports: typing.Dict[str, str] = {}
-        self.lines_to_insert: typing.List[typing.Tuple[int, str]] = []
+        self.classes: dict[str, _Class] = {}
+        self.imports: dict[str, str] = {}
+        self.lines_to_insert: list[tuple[int, str]] = []
         self.module = module
+        self.node = ast.parse(source_code)
         self.plugin = plugin
         self.source_code = source_code.split("\n")
-
-        node = ast.parse(source_code)
-        assert isinstance(node, ast.Module)
-        self.node = node
-        self._process_nodes(node.body)
+        self._process_nodes(self.node.body)
 
     def _process_if(self, node: ast.If, /):
         self._process_nodes(node.body)
@@ -171,28 +168,28 @@ class _Module:
                 if full_name in _ATTR_PATHS:
                     self.imports[name.asname or name.name] = name.asname or name.name
 
-    def _process_nodes(self, nodes: typing.Sequence[ast.AST], /) -> None:
+    def _process_nodes(self, nodes: collections.Sequence[ast.AST], /) -> None:
         for node in nodes:
             self._process_node(node)
 
     def add_import(self, path: str, /, *, hint: int = -1) -> str:
         raise NotImplementedError
 
-    def get_import(self, path: str, /) -> typing.Optional[str]:
+    def get_import(self, path: str, /) -> str | None:
         split = path.split(".")
         for i in range(len(split)):
             maybe_path = (".".join(split[i:]) + "." + ".".join(split[:i])).strip(". ")
             if self.match_to_import(maybe_path):
                 return maybe_path
 
-    def match_to_import(self, path: str, /) -> typing.Optional[str]:
+    def match_to_import(self, path: str, /) -> str | None:
         split = path.split(".")
         for imported_as, full_path in self.imports.items():
             split_at = imported_as.count(".") + 1
             if ".".join(split[:split_at]) == imported_as:
                 return (full_path + "." + ".".join(split[split_at:])).rstrip(".")
 
-    def join(self) -> typing.Optional[str]:
+    def join(self) -> str | None:
         if not self.lines_to_insert:
             return
 
@@ -225,7 +222,7 @@ def _try_parse_path(node: ast.AST, /) -> str:
 _EMPTY = object()
 
 
-def _uninherited_method(cls: type[typing.Any], attribute: str, /) -> typing.Optional[types.FunctionType]:
+def _uninherited_method(cls: type[typing.Any], attribute: str, /) -> types.FunctionType | None:
     value = getattr(cls, attribute, _EMPTY)
     if value is _EMPTY:
         return None
@@ -241,27 +238,27 @@ def _uninherited_method(cls: type[typing.Any], attribute: str, /) -> typing.Opti
 _FieldKwargT = typing.Literal[
     "cmp", "converter", "default", "eq", "factory", "hash", "on_setattr", "order", "repr", "validator"
 ]
-_FIELD_KWARGS: typing.FrozenSet[_FieldKwargT] = frozenset(
+_FIELD_KWARGS: frozenset[_FieldKwargT] = frozenset(
     ("cmp", "converter", "default", "eq", "factory", "hash", "on_setattr", "order", "repr", "validator")
 )
-_SPECIAL_CASED_DECORATORS: typing.Dict[str, str] = {"default": "factory"}
+_SPECIAL_CASED_DECORATORS = {"default": "factory"}
 
 
-@attrs.define()
+@dataclasses.dataclass(slots=True)
 class _Field:
-    cmp: typing.Union[ast.AST, str, None] = None
-    converter: typing.Union[ast.AST, str, None] = None
-    default: typing.Optional[ast.AST] = None  # TODO: attr_dict
-    eq: typing.Union[ast.AST, str, None] = None
-    factory: typing.Union[ast.AST, str, None] = None  # TODO: NOTHING
-    hash: typing.Optional[ast.AST] = None
-    on_setattr: typing.Union[ast.AST, str, None] = None
-    order: typing.Union[ast.AST, str, None] = None
-    repr: typing.Union[ast.AST, str, None] = None
-    validator: typing.Union[ast.AST, str, None] = None
+    cmp: ast.AST | str | None = None
+    converter: ast.AST | str | None = None
+    default: ast.AST | None = None  # TODO: attr_dict
+    eq: ast.AST | str | None = None
+    factory: ast.AST | str | None = None  # TODO: NOTHING
+    hash: ast.AST | None = None
+    on_setattr: ast.AST | str | None = None
+    order: ast.AST | str | None = None
+    repr: ast.AST | str | None = None
+    validator: ast.AST | str | None = None
 
     @classmethod
-    def from_assign(cls, module: _Module, node: typing.Union[ast.Assign, ast.AnnAssign]) -> "_Field":
+    def from_assign(cls, module: _Module, node: ast.Assign | ast.AnnAssign) -> "_Field":
         if not node.value or not isinstance(node.value, ast.Call):
             return _Field(default=node.value)
 
@@ -274,8 +271,8 @@ class _Field:
 
 
 def _filter_map(
-    callback: typing.Callable[[_T], typing.Optional[_OtherT]], iterable: typing.Iterable[typing.Optional[_T]]
-) -> typing.Iterator[_OtherT]:
+    callback: collections.Callable[[_T], _OtherT | None], iterable: collections.Iterable[_T | None]
+) -> collections.Iterator[_OtherT]:
     return filter(None, map(callback, filter(None, iterable)))
 
 
@@ -283,13 +280,13 @@ class _Class:
     __slots__ = ("_cls", "declared_methods", "fields", "module", "node")
 
     def __init__(self, module: _Module, cls_node: ast.ClassDef, /) -> None:
-        self._cls: typing.Union[_EllipsisType, typing.Type[typing.Any], None] = ...
-        self.declared_methods: typing.Set[str] = set()
-        self.fields: typing.Dict[str, _Field] = {}
+        self._cls: _EllipsisType | type[typing.Any] | None = ...
+        self.declared_methods: set[str] = set()
+        self.fields: dict[str, _Field] = {}
         self.module = module
         self.node = cls_node
 
-        field_modifiers: typing.Dict[str, typing.Set[typing.Tuple[str, str]]] = {}
+        field_modifiers: dict[str, set[tuple[str, str]]] = {}
 
         for node in cls_node.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -320,13 +317,24 @@ class _Class:
                 if modifier in _FIELD_KWARGS:
                     setattr(field, modifier, f"self.{attribute}")
 
-    def get_cls(self) -> typing.Optional[typing.Type[typing.Any]]:
+    @typing.overload
+    def get_cls(self, assert_exists: typing.Literal[True]) -> type[typing.Any]:
+        ...
+
+    @typing.overload
+    def get_cls(self, assert_exists: typing.Literal[False] = False) -> type[typing.Any] | None:
+        ...
+
+    def get_cls(self, assert_exists: bool = False) -> type[typing.Any] | None:
         if self._cls is ...:
             cls = getattr(self.module.module, self.node.name, None)
             assert cls is None or isinstance(cls, type)
             self._cls = cls
 
         assert not isinstance(self._cls, _EllipsisType)
+        if assert_exists:
+            assert self._cls is not None
+
         return self._cls
 
     def process(self) -> None:
@@ -365,101 +373,131 @@ class _Class:
                 module.source_code[start_of_body.lineno - 1].lstrip()
             )
 
-        for attribute in _ATTRS_GENNED_METHODS:
+        for attribute, callback in _ATTRS_GENNED_METHODS.items():
             method = _uninherited_method(cls, attribute)
             if method is None or attribute in self.declared_methods:
                 continue
 
-            code = textwrap.indent(textwrap.dedent(inspect.getsource(method)).replace("    ", indent), indent)
+            code = textwrap.dedent(inspect.getsource(method)).replace("    ", indent)
+            code = callback(code, self, nothing_import, before_class, start_of_body, indent)
+            module.lines_to_insert.append(
+                (start_of_body.end_lineno or start_of_body.lineno, textwrap.indent(code, indent))
+            )
 
-            if attribute == "__init__":
-                # Hack to stop `__attrs_init__` from being unwantedly generated
-                pre_indent = self.module.source_code[self.node.lineno - 1].removesuffix(
-                    self.module.source_code[self.node.lineno - 1].lstrip()
-                )
-                if self.node.end_lineno is None:
-                    # This doesn't seem to ever actually happen so i can't safely make any assumptions here.
-                    raise NotImplementedError(f"{self.module.module.__name__}.{self._cls.__name__}")
 
-                module.lines_to_insert.extend(
-                    (
-                        (start_of_body.end_lineno or start_of_body.lineno, f"{indent}__attrs_init__ = None"),
-                        (self.node.end_lineno + 1, f"{pre_indent}del {self.node.name}.__attrs_init__"),
-                    )
-                )
+def _process_any_init(
+    code: str, cls_data: _Class, nothing_import: str, before_class: int, _: ast.stmt, __: str, /
+) -> str:
+    cls = cls_data.get_cls(assert_exists=True)
+    validator_import = next(
+        _filter_map(cls_data.module.get_import, _ATTRS_GET_DISABLED_METHODS), None
+    ) or cls_data.module.add_import(_ATTRS_GET_DISABLED_METHODS[0])
+    code = (
+        code.replace("_cached_setattr.__get__", "object.__setattr__.__get__")
+        .replace("NOTHING", nothing_import)
+        .replace("_config._run_validators is True", f"{validator_import}() is False")
+    )
+    for field_index, (name, field) in enumerate(attrs.fields_dict(cls).items()):
+        field_variable = None
 
-            if attribute == "__init__" or attribute == "__attrs_init__":
-                validator_import = next(
-                    _filter_map(module.get_import, _ATTRS_GET_DISABLED_METHODS), None
-                ) or module.add_import(_ATTRS_GET_DISABLED_METHODS[0])
-                code = (
-                    code.replace("_cached_setattr.__get__", "object.__setattr__.__get__")
-                    .replace("NOTHING", nothing_import)
-                    .replace("_config._run_validators is True", f"{validator_import}() is False")
-                )
-                for name, field in self.fields.items():
-                    try:
-                        field_index = next(filter(lambda v: name == v[1].name, enumerate(attrs.fields(cls))))[0]
-                    except StopIteration:
-                        continue
+        if isinstance(field.default, attrs.Factory):  # type: ignore  # attrs typing bug
+            code, field_variable = _add_get_field(field_variable, code, field_index, name)
+            code = code.replace(f"__attr_factory_{name}", f"{field_variable}.default.factory")
 
-                    if field.default:
-                        code = code.replace(f"attr_dict[{name!r}].default", ast.unparse(field.default))
+        elif field.default is not attrs.NOTHING:
+            # TODO: we need to calculate pre-indent
+            # TODO: we need to handle imports the default may be using
+            default_name = f"_attr_{cls.__name__}_{name}_default"
+            default = cls_data.fields[name].default
+            assert default is not None
+            cls_data.module.lines_to_insert.append((before_class, f"{default_name} = {ast.unparse(default)}"))
+            code = code.replace(f"attr_dict[{name!r}].default", default_name)
 
-                    if isinstance(field.factory, str):
-                        code = code.replace(f"__attr_factory_{name}(self)", f"{field.factory}()")
+        if field.converter:
+            code, field_variable = _add_get_field(field_variable, code, field_index, name)
+            code = code.replace(f"__attr_converter_{name}", f"{field_variable}.converter")
 
-                    elif field.factory:
-                        factory_name = f"_attr_{cls.__name__}_{name}_factory"
-                        module.lines_to_insert.append((before_class, factory_name + " = " + ast.unparse(field.factory)))
-                        code = code.replace(f"__attr_factory_{name}", factory_name)
+        if field.validator:
+            code, field_variable = _add_get_field(field_variable, code, field_index, name)
+            code = code.replace(f"__attr_validator_{name}", f"{field_variable}.validator").replace(
+                f"__attr_{name}", field_variable
+            )
 
-                    if isinstance(field.converter, str):
-                        code = code.replace(f"__attr_converter_{name}(self,", f"{field.converter}(")
+    return code
 
-                    elif field.converter:
-                        converter_name = f"_attr_{cls.__name__}_{name}_converter"
-                        code = code.replace(f"__attr_converter_{name}", converter_name)
-                        module.lines_to_insert.append(
-                            (before_class, converter_name + " = " + ast.unparse(field.converter))
-                        )
 
-                    if isinstance(field.validator, str):
-                        code = code.replace(
-                            f"__attr_validator_{name}(self, __attr_{name}",
-                            f"{field.validator}(self.__attrs_attrs__[{field_index}]",
-                        )
+def _process_init(
+    code: str, cls_data: _Class, nothing_import: str, before_class: int, start_of_body: ast.stmt, indent: str, /
+) -> str:
+    # Hack to stop `__attrs_init__` from being unwantedly generated
+    pre_indent = cls_data.module.source_code[cls_data.node.lineno - 1].removesuffix(
+        cls_data.module.source_code[cls_data.node.lineno - 1].lstrip()
+    )
+    cls = cls_data.get_cls(assert_exists=True)
+    if cls_data.node.end_lineno is None:
+        # This doesn't seem to ever actually happen so i can't safely make any assumptions here.
+        raise NotImplementedError(f"{cls_data.module.module.__name__}.{cls.__name__}")
 
-                    elif field.validator:
-                        validator_name = f"_attr_{cls.__name__}_{name}_validator"
-                        module.lines_to_insert.append(
-                            (before_class, validator_name + " = " + ast.unparse(field.validator))
-                        )
-                        code = code.replace(f"__attr_validator_{name}", validator_name).replace(
-                            f"__attr_{name}", f"self.__attrs_attrs__[{field_index}]"
-                        )
+    if not _uninherited_method(cls, "__attrs_init__"):
+        cls_data.module.lines_to_insert.extend(
+            (
+                (start_of_body.end_lineno or start_of_body.lineno, f"{indent}__attrs_init__ = None"),
+                (cls_data.node.end_lineno + 1, f"{pre_indent}del {cls_data.node.name}.__attrs_init__"),
+            )
+        )
+    return _process_any_init(code, cls_data, nothing_import, before_class, start_of_body, indent)
 
-            elif attribute == "__repr__":
-                ...
 
-            elif attribute == "__hash__":
-                ...
+def _process_eq(
+    code: str, cls_data: _Class, nothing_import: str, before_class: int, start_of_body: ast.stmt, indent: str, /
+) -> str:
+    return code
 
-            elif attribute == "__eq__":
-                ...
 
-            module.lines_to_insert.append((start_of_body.end_lineno or start_of_body.lineno, code))
+def _process_hash(
+    code: str, cls_data: _Class, nothing_import: str, before_class: int, start_of_body: ast.stmt, indent: str, /
+) -> str:
+    return code
+
+
+def _process_repr(
+    code: str, cls_data: _Class, nothing_import: str, before_class: int, start_of_body: ast.stmt, indent: str, /
+) -> str:
+    return code
+
+
+_ATTRS_GENNED_METHODS: dict[str, collections.Callable[[str, _Class, str, int, ast.stmt, str], str]] = {
+    "__attrs_init__": _process_any_init,
+    "__eq__": _process_eq,
+    "__hash__": _process_hash,
+    "__init__": _process_init,
+    "__repr__": _process_repr,
+}
+
+
+def _add_get_field(variable_name: str | None, code: str, index: int, name: str) -> tuple[str, str]:
+    if variable_name:
+        return code, variable_name
+
+    variable_name = f"__attrs_field_{name}"
+    split_code = code.split("\n")
+    nodes = ast.parse(code).body[0]
+    assert isinstance(nodes, ast.FunctionDef)
+    first_line = nodes.body[0].lineno - 1
+    indent = split_code[first_line].removesuffix(split_code[first_line].lstrip())
+    split_code.insert(first_line, f"{indent}{variable_name} = self.__attrs_attrs__[{index}]")
+    return "\n".join(split_code), variable_name
 
 
 class AttrsPlugin(plugin_base.NuitkaPluginBase):
     """A Nuitka plugin for compile-time generating attrs and dataclasses methods."""
 
-    plugin_name: typing.Final[str] = "attrs"
+    plugin_name: typing.Final[str] = "nuitka_attrs"
 
-    def __init__(self, attrs_modules: typing.Optional[typing.List[str]], debug_dir: typing.Optional[str]) -> None:
+    def __init__(self, attrs_modules: list[str] | None, debug_dir: str | None) -> None:
         self.attrs_modules = [re.compile(name) for name in attrs_modules] if attrs_modules else None
         self.debug_dir = pathlib.Path(debug_dir) if debug_dir else None
-        self.module_cache: typing.Dict[str, _Module] = {}
+        self.module_cache: dict[str, _Module] = {}
 
         if self.debug_dir:
             for file in self.debug_dir.glob("*-debug.py"):
@@ -483,7 +521,7 @@ class AttrsPlugin(plugin_base.NuitkaPluginBase):
             "Warning, all .py files in this directory will be overwritten or deleted.",
         )
 
-    def get_module(self, name: str, /, *, source_code: typing.Optional[str] = None) -> _Module:
+    def get_module(self, name: str, /, *, source_code: str | None = None) -> _Module:
         if module := self.module_cache.get(name):
             self.module_cache[name] = self.module_cache.pop(name)
             return module
@@ -503,7 +541,7 @@ class AttrsPlugin(plugin_base.NuitkaPluginBase):
 
         return module
 
-    def get_module_cached(self, name: str, /, *, source_code: typing.Optional[str] = None) -> _Module:
+    def get_module_cached(self, name: str, /, *, source_code: str | None = None) -> _Module:
         if module := self.module_cache.get(name):
             self.module_cache[name] = self.module_cache.pop(name)
             return module

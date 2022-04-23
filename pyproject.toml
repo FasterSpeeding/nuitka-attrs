@@ -5,7 +5,7 @@ build-backend = "flit_core.buildapi"
 [project]
 name = "nuitka_attrs"
 readme = "README.md"
-requires-python = ">=3.9.0,<3.12"
+requires-python = ">=3.10.0,<3.12"
 license = {file = "LICENSE"}
 authors = [ {name = "Faster Speeding", email="lucina@lmbyrne.dev"} ]
 keywords = ["hikari"]
@@ -15,7 +15,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Natural Language :: English",
     "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: Implementation :: CPython",
@@ -38,7 +37,7 @@ name = "nuitka_attrs"
 
 [tool.black]
 line-length     = 120
-target-version  = ["py39"]
+target-version  = ["py310"]
 include         = ".*pyi?$"
 
 [tool.coverage.run]
@@ -65,7 +64,7 @@ force_single_line = true
 [tool.pyright]
 include = ["nuitka_attrs", "noxfile.py", "tests"]
 
-pythonVersion = "3.9"
+pythonVersion = "3.10"
 typeCheckingMode = "strict"
 reportMissingModuleSource = "error"
 reportMissingTypeStubs = "error"
