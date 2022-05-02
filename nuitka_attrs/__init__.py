@@ -61,7 +61,6 @@ from collections import abc as collections
 
 import attrs
 from nuitka.plugins import PluginBase as plugin_base  # type: ignore
-from nuitka.utils import ModuleNames as module_names  # type: ignore
 
 __author__: typing.Final[str] = "Faster Speeding"
 __ci__: typing.Final[str] = "https://github.com/FasterSpeeding/nuitka-attrs/actions"
@@ -513,7 +512,7 @@ def _add_get_field(variable_name: str | None, code: str, index: int, name: str) 
     return "\n".join(split_code), variable_name
 
 
-class AttrsPlugin(plugin_base.NuitkaPluginBase):
+class AttrsPlugin(plugin_base.NuitkaPluginBase):  # pyright: reportUntypedBaseClass=false
     """A Nuitka plugin for compile-time generating attrs and dataclasses methods."""
 
     plugin_name: typing.Final[str] = "nuitka_attrs"
@@ -572,11 +571,13 @@ class AttrsPlugin(plugin_base.NuitkaPluginBase):
 
         return self.get_module(name, source_code=source_code)
 
-    def onModuleSourceCode(self, module_name: module_names.ModuleName, source_code: str) -> str:
+    def onModuleSourceCode(
+        self, module_name: typing.Any, source_code: str  # This is really module_names.ModuleName
+    ) -> str:
         name = str(module_name)
 
         force_write = False
-        if module_name == "attr._make":
+        if name == "attr._make":
             # Small hack to stop attrs from generating `__attrs_init__` because of the generated `__init__`.
             source_code = source_code.replace(
                 """if _determine_whether_to_implement(
@@ -604,10 +605,10 @@ class AttrsPlugin(plugin_base.NuitkaPluginBase):
         module.process()
 
         result = module.join()
-        self._write_debug(module_name, (result or source_code) if force_write else result)
+        self._write_debug(name, (result or source_code) if force_write else result)
         return result or source_code
 
-    def _write_debug(self, module_name: module_names.ModuleName, source_code: str | None) -> None:
+    def _write_debug(self, module_name: str, source_code: str | None) -> None:
         if self.debug_dir and source_code:
-            with (self.debug_dir / f"{module_name!s}-debug.py").open("w+") as file:
+            with (self.debug_dir / f"{module_name}-debug.py").open("w+") as file:
                 file.write(source_code)
