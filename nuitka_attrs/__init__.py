@@ -92,6 +92,8 @@ ATTRS_CLS_GEN = frozenset(
         "attr.frozen",
         "attr.mutable",
         "attr.s",
+        "_make.attrib",  # This is used internally by attrs.
+        "_make.attrs",  # This is used internally by attrs.
         # new "attrs" namespace
         "attrs.define",
         "attrs.frozen",
@@ -228,7 +230,7 @@ def _uninherited_method(cls: type[typing.Any], attribute: str, /) -> types.Funct
         return None
 
     for base_cls in cls.mro()[1:]:
-        other_value = getattr(base_cls, attribute, None)
+        other_value = getattr(base_cls, attribute, _EMPTY)
         if value is other_value:
             return None
 
@@ -277,12 +279,13 @@ def _filter_map(
 
 
 class _Class:
-    __slots__ = ("_cls", "declared_methods", "fields", "module", "node")
+    __slots__ = ("_cls", "declared_methods", "fields", "kwargs_lines", "module", "node")
 
     def __init__(self, module: _Module, cls_node: ast.ClassDef, /) -> None:
         self._cls: _EllipsisType | type[typing.Any] | None = ...
         self.declared_methods: set[str] = set()
         self.fields: dict[str, _Field] = {}
+        self.kwargs_lines: typing.Optional[range] = None
         self.module = module
         self.node = cls_node
 
@@ -318,14 +321,14 @@ class _Class:
                     setattr(field, modifier, f"self.{attribute}")
 
     @typing.overload
-    def get_cls(self, assert_exists: typing.Literal[True]) -> type[typing.Any]:
+    def get_cls(self, *, assert_exists: typing.Literal[True]) -> type[typing.Any]:
         ...
 
     @typing.overload
-    def get_cls(self, assert_exists: typing.Literal[False] = False) -> type[typing.Any] | None:
+    def get_cls(self, *, assert_exists: typing.Literal[False] = False) -> type[typing.Any] | None:
         ...
 
-    def get_cls(self, assert_exists: bool = False) -> type[typing.Any] | None:
+    def get_cls(self, *, assert_exists: bool = False) -> type[typing.Any] | None:
         if self._cls is ...:
             cls = getattr(self.module.module, self.node.name, None)
             assert cls is None or isinstance(cls, type)
@@ -339,9 +342,9 @@ class _Class:
 
     def process(self) -> None:
         module = self.module
-        match = next(_filter_map(module.match_to_import, _filter_map(_try_parse_path, self.node.decorator_list)), None)
+        matches = _filter_map(module.match_to_import, _filter_map(_try_parse_path, self.node.decorator_list))
         cls = self.get_cls()
-        if match not in ATTRS_CLS_GEN or not cls:
+        if not cls or not any(match in ATTRS_CLS_GEN for match in matches):
             return
 
         for base_cls in cls.mro()[:-1]:
@@ -383,6 +386,20 @@ class _Class:
             module.lines_to_insert.append(
                 (start_of_body.end_lineno or start_of_body.lineno, textwrap.indent(code, indent))
             )
+
+    def replace_decorator_kwarg(self, name: str):
+        if self.kwargs_lines is None:
+            decorators = map(self.module.match_to_import, map(_try_parse_path, self.node.decorator_list))
+            for decorator_node, decorator in zip(self.node.decorator_list, decorators):
+                if decorator in ATTRS_CLS_GEN:
+                    self.kwargs_lines = range(
+                        decorator_node.lineno - 1, decorator_node.end_lineno or decorator_node.lineno
+                    )
+                    break
+
+        assert self.kwargs_lines is not None
+        for line in self.kwargs_lines:
+            self.module.source_code[line] = self.module.source_code[line].replace("{name}=True", "{name}=False")
 
 
 def _process_any_init(
@@ -429,6 +446,7 @@ def _process_any_init(
 def _process_init(
     code: str, cls_data: _Class, nothing_import: str, before_class: int, start_of_body: ast.stmt, indent: str, /
 ) -> str:
+    cls_data.replace_decorator_kwarg("init")
     # Hack to stop `__attrs_init__` from being unwantedly generated
     pre_indent = cls_data.module.source_code[cls_data.node.lineno - 1].removesuffix(
         cls_data.module.source_code[cls_data.node.lineno - 1].lstrip()
@@ -441,7 +459,10 @@ def _process_init(
     if not _uninherited_method(cls, "__attrs_init__"):
         cls_data.module.lines_to_insert.extend(
             (
-                (start_of_body.end_lineno or start_of_body.lineno, f"{indent}__attrs_init__ = None"),
+                (
+                    start_of_body.end_lineno or start_of_body.lineno,
+                    f"{indent}__attrs_init__ = lambda *args, **kwargs: None",
+                ),
                 (cls_data.node.end_lineno + 1, f"{pre_indent}del {cls_data.node.name}.__attrs_init__"),
             )
         )
@@ -451,18 +472,21 @@ def _process_init(
 def _process_eq(
     code: str, cls_data: _Class, nothing_import: str, before_class: int, start_of_body: ast.stmt, indent: str, /
 ) -> str:
+    cls_data.replace_decorator_kwarg("eq")
     return code
 
 
 def _process_hash(
     code: str, cls_data: _Class, nothing_import: str, before_class: int, start_of_body: ast.stmt, indent: str, /
 ) -> str:
+    cls_data.replace_decorator_kwarg("hash")
     return code
 
 
 def _process_repr(
     code: str, cls_data: _Class, nothing_import: str, before_class: int, start_of_body: ast.stmt, indent: str, /
 ) -> str:
+    cls_data.replace_decorator_kwarg("repr")
     return code
 
 
@@ -551,6 +575,7 @@ class AttrsPlugin(plugin_base.NuitkaPluginBase):
     def onModuleSourceCode(self, module_name: module_names.ModuleName, source_code: str) -> str:
         name = str(module_name)
 
+        force_write = False
         if module_name == "attr._make":
             # Small hack to stop attrs from generating `__attrs_init__` because of the generated `__init__`.
             source_code = source_code.replace(
@@ -564,9 +589,10 @@ class AttrsPlugin(plugin_base.NuitkaPluginBase):
         ):
             builder.add_init()
         elif not _has_own_attribute(cls, "__attrs_init__"):""",
-            )
+            ).replace("a = getattr(base_cls, attrib_name, None)", "a = getattr(base_cls, attrib_name, _sentinel)")
+            force_write = True
 
-        if self.attrs_modules and not any(match.fullmatch(name) for match in self.attrs_modules):
+        elif self.attrs_modules and not any(match.fullmatch(name) for match in self.attrs_modules):
             return source_code
 
         try:
@@ -577,8 +603,11 @@ class AttrsPlugin(plugin_base.NuitkaPluginBase):
 
         module.process()
 
-        if (result := module.join()) and self.debug_dir:
-            with (self.debug_dir / f"{name!s}-debug.py").open("w+") as file:
-                file.write(result)
-
+        result = module.join()
+        self._write_debug(module_name, (result or source_code) if force_write else result)
         return result or source_code
+
+    def _write_debug(self, module_name: module_names.ModuleName, source_code: str | None) -> None:
+        if self.debug_dir and source_code:
+            with (self.debug_dir / f"{module_name!s}-debug.py").open("w+") as file:
+                file.write(source_code)
