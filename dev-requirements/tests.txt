@@ -4,11 +4,7 @@
 #
 #    pip-compile --output-file='dev-requirements\tests.txt' 'dev-requirements\tests.in'
 #
-atomicwrites==1.4.0
-    # via pytest
 attrs==21.4.0
-    # via pytest
-colorama==0.4.4
     # via pytest
 coverage[toml]==6.3.2
     # via pytest-cov
@@ -26,18 +22,18 @@ py==1.11.0
     #   pytest-forked
 pyparsing==3.0.8
     # via packaging
-pytest==7.1.1
+pytest==7.1.2
     # via
-    #   -r dev-requirements\tests.in
+    #   -r dev-requirements/tests.in
     #   pytest-cov
     #   pytest-forked
     #   pytest-xdist
 pytest-cov==3
-    # via -r dev-requirements\tests.in
+    # via -r dev-requirements/tests.in
 pytest-forked==1.4.0
     # via pytest-xdist
 pytest-xdist==2.5
-    # via -r dev-requirements\tests.in
+    # via -r dev-requirements/tests.in
 tomli==2.0.1
     # via
     #   coverage
