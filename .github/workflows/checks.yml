@@ -90,7 +90,7 @@ jobs:
       - name: Upload coverage
         uses: paambaati/codeclimate-action@v3.0.0
         env:
-          CC_TEST_REPORTER_ID: 117363998d7c6b4bab4ac57348026e1089767e142ccca3eb8cc37da6cf4cc8b9
+          CC_TEST_REPORTER_ID: 9342c4ae5c99865cd2a0510f9c4ebbf25f13c07c24399df399680620b491d11f
         with:
           coverageLocations: .coverage.xml:coverage.py
 
