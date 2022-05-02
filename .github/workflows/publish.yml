@@ -6,8 +6,6 @@ on:
     types: [published]
 
 jobs:
-  publish-docs:
-    uses: ./.github/workflows/publish-docs.yml
   publish:
     runs-on: ubuntu-latest
 
