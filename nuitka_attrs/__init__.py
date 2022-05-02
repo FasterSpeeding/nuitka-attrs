@@ -64,14 +64,14 @@ from nuitka.plugins import PluginBase as plugin_base  # type: ignore
 from nuitka.utils import ModuleNames as module_names  # type: ignore
 
 __author__: typing.Final[str] = "Faster Speeding"
-__ci__: typing.Final[str] = "https://github.com/FasterSpeeding/nuitka_attrs/actions"
+__ci__: typing.Final[str] = "https://github.com/FasterSpeeding/nuitka-attrs/actions"
 __copyright__: typing.Final[str] = "© 2022 Faster Speeding"
-__coverage__: typing.Final[str] = "https://codeclimate.com/github/FasterSpeeding/nuitka_attrs"
-__docs__: typing.Final[str] = "https://tanjun.cursed.solutions/"
+__coverage__: typing.Final[str] = "https://codeclimate.com/github/FasterSpeeding/nuitka-attrs"
+__docs__: typing.Final[str] = "https://github.com/FasterSpeeding/nuitka-attrs/blob/master/README.md"
 __email__: typing.Final[str] = "lucina@lmbyrne.dev"
-__issue_tracker__: typing.Final[str] = "https://github.com/FasterSpeeding/nuitka_attrs/issues"
+__issue_tracker__: typing.Final[str] = "https://github.com/FasterSpeeding/nuitka-attrs/issues"
 __license__: typing.Final[str] = "BSD"
-__url__: typing.Final[str] = "https://github.com/FasterSpeeding/nuitka_attrs"
+__url__: typing.Final[str] = "https://github.com/FasterSpeeding/nuitka-attrs"
 __version__: typing.Final[str] = "0.1.0"
 
 _T = typing.TypeVar("_T")
