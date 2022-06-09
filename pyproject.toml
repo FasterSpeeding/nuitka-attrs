@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Utilities",
     "Typing :: Typed"
 ]
-dependencies = ["attrs~=21.0", "nuitka~=0.7.0"]  # "decompyle3~=3.8", "uncompyle6~=3.8"]
+dependencies = ["attrs~=21.0", "nuitka~=0.7"]  # "decompyle3~=3.8", "uncompyle6~=3.8"]
 dynamic = ["description", "version"]
 
 [project.urls]
